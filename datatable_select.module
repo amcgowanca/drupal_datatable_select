@@ -1,0 +1,225 @@
+<?php
+/**
+ * @file
+ * datatable_select.module
+ */
+
+/**
+ * Implements hook_element_info().
+ */
+function datatable_select_element_info() {
+  $types = array();
+  $types['datatable_select'] = array(
+    '#input' => TRUE,
+    '#js_select' => TRUE,
+    '#multiple' => TRUE,
+    '#process' => array('datatable_select_form_element_process'),
+    '#rows' => array(),
+    '#empty' => '',
+    '#theme' => 'datatable_select',
+  );
+  return $types;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function datatable_select_theme() {
+  return array(
+    'datatable_select' => array(
+      'render element' => 'element',
+      'file' => 'datatable_select.theme.inc',
+    ),
+    'datatable_table' => array(
+      'variables' => array(
+        'header' => NULL,
+        'rows' => NULL,
+        'attributes' => array(),
+        'caption' => NULL,
+        'colgroups' => array(),
+        'sticky' => TRUE,
+        'empty' => '',
+      ),
+    ),
+  );
+}
+
+/**
+ *
+ */
+function datatable_select_form_element_process($element, &$form_state, $form) {
+  if ($element['#multiple']) {
+    $value = is_array($element['#value']) ? $element['#value'] : array();
+  }
+  else {
+    $element['#js_select'] = FALSE;
+  }
+
+  $element['#tree'] = TRUE;
+
+  if (!empty($element['#header'])) {
+    foreach ($element['#header'] as $id => $header) {
+      if (!is_array($header)) {
+        $header = array('data' => $header);
+      }
+      if (!isset($header['field'])) {
+        $header['field'] = $id;
+      }
+      $element['#header'][$id] = $header;
+    }
+  }
+  else {
+    $element['#header'] = array();
+  }
+
+  if (!isset($element['#datatable_select'])) {
+    $element['#datatable_select'] = array();
+  }
+
+  $tablesort = datatable_select_tablesort_init($element['#header']);
+  $element['#datatable_select'] += array(
+    'path' => $_GET['q'],
+  );
+
+  if (0 < count($element['#rows'])) {
+    if (!isset($element['#default_value']) || 0 === $element['#default_value']) {
+      $element['#default_value'] = array();
+    }
+
+    foreach ($element['#rows'] as $key => $choice) {
+      if (!isset($element[$key])) {
+        if ($element['#multiple']) {
+          $title = '';
+          if (!empty($element['#options'][$key]['title']['data']['#title'])) {
+            $title = t('Update @title', array(
+              '@title' => $element['#options'][$key]['title']['data']['#title'],
+            ));
+          }
+          $element[$key] = array(
+            '#type' => 'checkbox',
+            '#title' => $title,
+            '#title_display' => 'invisible',
+            '#return_value' => $key,
+            '#default_value' => isset($value[$key]) ? $key : NULL,
+            '#attributes' => $element['#attributes'],
+          );
+        }
+        else {
+          $parents_for_id = array_merge($element['#parents'], array($key));
+          $element[$key] = array(
+            '#type' => 'radio',
+            '#title' => '',
+            '#return_value' => $key,
+            '#default_value' => $key == $element['#default_value'] ? $key : NULL,
+            '#attributes' => $element['#attributes'],
+            '#parents' => $element['#parents'],
+            '#id' => drupal_html_id('edit-' . implode('-', $parents_for_id)),
+            '#ajax' => isset($element['#ajax']) ? $element['#ajax'] : NULL,
+          );
+        }
+        if (isset($element['#rows'][$key]['#weight'])) {
+          $element[$key]['#weight'] = $element['#rows'][$key]['#weight'];
+        }
+      }
+    }
+
+    $element['#datatable_select']['tablesort'] = $tablesort;
+
+    $handler = new DatatableSelectSortHandler($tablesort);
+    uasort($element['#rows'], array($handler, 'sort'));
+  }
+  else {
+    $element['#value'] = array();
+  }
+
+  return $element;
+}
+
+/**
+ * @param array $header
+ * @return array
+ */
+function datatable_select_tablesort_init(array $header) {
+  $tablesort = datatable_select_tablesort_get_order($header);
+  $tablesort['sort'] = tablesort_get_sort($header);
+  $tablesort['query'] = tablesort_get_query_parameters();
+  return $tablesort;
+}
+
+/**
+ * @param array $cell
+ * @param array $header
+ * @param array $tablesort
+ * @param array $options
+ * @return array
+ * @throws Exception
+ */
+function datatable_select_tablesort_header(array $cell, array $header, array $tablesort, array $options = array()) {
+  if (is_array($cell) && isset($cell['field'])) {
+    $title = t('sort by @s', array('@s' => $cell['data']));
+    if ($cell['data'] == $tablesort['name']) {
+      $tablesort['sort'] = (($tablesort['sort'] == 'asc') ? 'desc' : 'asc');
+      $cell['class'][] = 'active';
+      $image = theme('tablesort_indicator', array('style' => $tablesort['sort']));
+    }
+    else {
+      $tablesort['sort'] = 'asc';
+      $image = '';
+    }
+
+    if (!empty($cell['field'])) {
+      $cell['data'] = l($cell['data'] . $image, $options['path'], array(
+        'attributes' => array('title' => $title, 'class' => array('datatable-select-sort')),
+        'query' => array_merge($tablesort['query'], array(
+          'sort' => $tablesort['sort'],
+          'order' => $cell['field'],
+        )),
+        'html' => TRUE
+      ));
+    }
+
+    unset($cell['field'], $cell['sort']);
+  }
+  return $cell;
+}
+
+/**
+ * Determines the current sort criterion using the header's field.
+ *
+ * This implementation was copied from that of the tablesort_get_order() with
+ * a minor change in which the $header['field'] instead of the $header['data']
+ * is used for determining the default.
+ *
+ * @param array $headers
+ *   An array of column headers in the format described.
+ *
+ * @return array
+ *   An associative array describing the criterion, contain the keys:
+ *   - "name": The localized title of the column.
+ *   - "field": The field to sort on.
+ */
+function datatable_select_tablesort_get_order($headers) {
+  $order = isset($_GET['order']) ? $_GET['order'] : '';
+  foreach ($headers as $header) {
+    if (is_array($header) && isset($header['field'])) {
+      if ($order == $header['field']) {
+        $default = $header;
+        break;
+      }
+
+      if (empty($default) && isset($header['sort']) && ('asc' == $header['sort'] || 'desc' == $header['sort'])) {
+        $default = $header;
+      }
+    }
+  }
+
+  if (!isset($default)) {
+    $default = reset($headers);
+    if (!is_array($default)) {
+      $default = array('data' => $default);
+    }
+  }
+
+  $default += array('data' => NULL, 'field' => NULL);
+  return array('name' => $default['data'], 'field' => $default['field']);
+}
